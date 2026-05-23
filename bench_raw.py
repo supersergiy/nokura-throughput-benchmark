@@ -11,9 +11,12 @@ Zero dependencies (stdlib only). Usage:
     python bench_raw.py --mode processes --workers 4,8,16
 """
 
-import argparse, json, random, time
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from urllib.request import urlopen, Request
+import argparse
+import json
+import random
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from urllib.request import Request, urlopen
 
 URL = "https://c10s.pni.princeton.edu/zfish_2025_public/stack/0406"
 RES = "40_40_45"

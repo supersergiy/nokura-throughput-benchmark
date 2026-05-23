@@ -6,20 +6,15 @@ Usage:
     python plot_results.py -o results/sarek_2026-05-22.png
 """
 
-import sys
+import argparse
+
+import matplotlib.pyplot as plt
+
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("-o", "--output", default=None, help="Output PNG (default: show)")
     args = parser.parse_args()
-
-    try:
-        import matplotlib.pyplot as plt
-        import matplotlib.ticker as ticker
-    except ImportError:
-        print("pip install matplotlib", file=sys.stderr)
-        sys.exit(1)
 
     # === Single-node curl results (16MB chunks, 500 downloads) ===
     par_16mb =  [8,     16,    24,    32,    48,    64,    96,   128,   192,   256]
