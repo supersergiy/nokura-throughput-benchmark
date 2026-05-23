@@ -1,66 +1,68 @@
 # Nokura Storage Throughput Benchmark
 
-Measures read throughput from Princeton's nokura storage (neuroglancer-precomputed over HTTP) at varying concurrency levels. Demonstrates that throughput saturates at **~130 MB/s** with 1 MB chunks, regardless of worker count.
+Measures read throughput from Princeton's nokura storage (neuroglancer-precomputed over HTTPS) at varying concurrency and chunk sizes. **The bottleneck is ops/sec, not bandwidth** — larger chunks dramatically increase throughput.
 
-## Results (Sarek, 2026-05-22)
+## Results (Sarek single node, curl, 2026-05-22)
 
-### Worker count sweep (40nm, 1 MB chunks, 9600 reads)
+### 1 MB chunks (40nm, 1024x1024)
 
-| Workers | Time (s) | Ops/sec | MB/s  |
-|---------|----------|---------|-------|
-| 8       | 112.5    | 85.3    | 85.3  |
-| 32      | 85.0     | 112.9   | 112.9 |
-| 64      | 77.5     | 123.9   | 123.9 |
-| 128     | 74.1     | 129.6   | 129.6 |
-| 256     | 75.8     | 126.6   | 126.6 |
+| Parallelism | Ops/sec | MB/s |
+|-------------|---------|------|
+| 32          | 96.2    | 96   |
+| 64          | 88.7    | 89   |
+| 128         | 69.5    | 70   |
+| 256         | 35.3    | 35   |
 
-Throughput flattens at 64 workers. Adding more workers (up to 256) does not increase throughput. The ceiling is **~130 MB/s** (~1 Gbps).
+With 1 MB chunks, throughput **peaks at ~96 MB/s** and **degrades** at higher parallelism. The server handles ~100 small requests/sec per client node.
 
-### Resolution comparison (128 workers)
+### 16 MB chunks (5nm, 4096x4096)
 
-| Resolution | Chunk size | Ops/sec | MB/s  |
-|------------|-----------|---------|-------|
-| 320nm      | 1 MB      | 113.8   | 113.8 |
-| 80nm       | 1 MB      | 126.1   | 126.1 |
-| 40nm       | 1 MB      | 129.6   | 129.6 |
-| 5nm        | 16 MB     | 12.0    | 191.5 |
+| Parallelism | Ops/sec | MB/s  |
+|-------------|---------|-------|
+| 32          | 23.5    | 376   |
+| 64          | 25.1    | 402   |
+| 128         | 28.4    | **455** |
 
-Larger chunks (16 MB) achieve higher MB/s by amortizing per-request overhead, but even then the ceiling is under 200 MB/s.
+With 16 MB chunks, throughput reaches **455 MB/s** — 4.7x higher than 1 MB chunks. The server has plenty of bandwidth; the 1 MB ceiling is per-request overhead (TLS, HTTP headers, server-side lookup).
+
+### The bottleneck is ops/sec
+
+The server can sustain ~100 ops/sec for small (1 MB) requests from a single node. Per-request overhead dominates:
+- At 1 MB: ~100 ops/sec × 1 MB = **~100 MB/s**
+- At 16 MB: ~28 ops/sec × 16 MB = **~455 MB/s**
+- High parallelism with small chunks actually **hurts** (P=256 is 3x slower than P=32)
 
 ### Impact on alignment
 
-The full pairwise fine alignment pipeline requires **~3 TB of I/O per z-section** (4 offsets). At 130 MB/s, that's **~6.4 hours** of I/O per section — a significant fraction of the ~22-hour total processing time.
+The pairwise fine alignment pipeline does ~3 TB of I/O per z-section (4 offsets), mostly in 1 MB chunks (1024x1024 encodings/fields). At the 1 MB ceiling of ~100 MB/s per node, this limits throughput even with many SLURM workers.
 
-For comparison, GCS from a GCP VM in the same region delivers **~2 GB/s**, which would complete the same I/O in **~25 minutes**.
+For comparison, GCS from a GCP VM delivers **~2 GB/s**, completing the same I/O in ~25 minutes instead of hours.
 
 ## Quick start
 
 ```bash
-pip install requests
+# Curl benchmark (simplest, zero Python deps for the download itself):
+./bench_curl.sh 500 8,32,64
 
-# Run from a Sarek login or compute node:
-python bench_raw.py
+# Python benchmark (stdlib only):
+python bench_raw.py --num-chunks 500 --workers 8,32,64
 
-# Custom settings:
-python bench_raw.py \
-    --url https://c10s.pni.princeton.edu/zfish_2025_public/stack/0406 \
-    --resolution 40_40_45 \
-    --num-chunks 5000 \
-    --workers 8,32,64,128,256 \
-    --output-csv results/my_run.csv
+# Python with multiprocessing (bypasses GIL, ~2x faster than threads):
+python bench_raw.py --mode processes --num-chunks 500 --workers 4,8,16
+
+# Test 16 MB chunks at 5nm:
+python bench_raw.py --resolution 8_8_45 --num-chunks 200 --workers 8,32,64
 
 # Plot results:
 pip install matplotlib
-python plot_results.py results/my_run.csv -o results/my_run.png
+python plot_results.py results/sarek_2026-05-22.csv -o results/plot.png
 ```
 
 ## Methodology
 
-The benchmark reads random chunks from a precomputed layer via HTTP GET using Python's `urllib` with connection pooling. Each chunk is downloaded fully and discarded. Timing starts after chunk coordinates are enumerated and measures only the download phase.
+Downloads random chunks from a precomputed layer via HTTP GET, discards the data, measures wall-clock time. `bench_curl.sh` uses `curl + xargs` (no Python overhead). `bench_raw.py` uses Python stdlib `urllib`.
 
-This is a pure I/O test — no computation, no GPU, no framework overhead. The same saturation was independently confirmed using the zetta_utils mazepa framework with SLURM workers (128 array jobs across multiple nodes).
-
-**Note**: Running from a single login node will show a lower ceiling (~60 MB/s) due to per-node network limits. The ~130 MB/s ceiling is the aggregate across many nodes hitting the storage endpoint concurrently — which is the production configuration. To reproduce the full result, run the script simultaneously from multiple compute nodes, or use the SLURM-based benchmark.
+**Python GIL note**: Python threads are ~50% slower than curl due to GIL contention. Use `--mode processes` to match curl throughput from Python.
 
 ## Cluster details
 
