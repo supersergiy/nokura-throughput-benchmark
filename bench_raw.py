@@ -3,15 +3,16 @@
 Nokura storage throughput benchmark.
 
 Downloads chunks from a neuroglancer-precomputed HTTP layer in parallel,
-sweeping thread counts to show throughput saturation.
+sweeping worker counts to show throughput saturation.
 
 Zero dependencies (stdlib only). Usage:
     python bench_raw.py
     python bench_raw.py --num-chunks 500 --workers 8,32,64
+    python bench_raw.py --mode processes --workers 4,8,16
 """
 
 import argparse, json, random, time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from urllib.request import urlopen, Request
 
 URL = "https://c10s.pni.princeton.edu/zfish_2025_public/stack/0406"
@@ -43,8 +44,12 @@ def main():
     p.add_argument("--resolution", default=RES)
     p.add_argument("--num-chunks", type=int, default=2000)
     p.add_argument("--workers", default="8,32,64,128,256")
+    p.add_argument("--mode", choices=["threads", "processes"], default="threads",
+                   help="threads (GIL-limited) or processes (no GIL, ~2x faster)")
     p.add_argument("--output-csv", default=None)
     args = p.parse_args()
+
+    Executor = ProcessPoolExecutor if args.mode == "processes" else ThreadPoolExecutor
 
     coords, chunk_bytes = get_chunks(args.url, args.resolution, args.num_chunks)
     urls = [f"{args.url}/{args.resolution}/{c}" for c in coords]
@@ -52,6 +57,7 @@ def main():
     mb = chunk_bytes / 1024 / 1024
     print(f"Layer: {args.url}")
     print(f"Resolution: {args.resolution}  Chunk: {mb:.1f} MB  Count: {n}")
+    print(f"Mode: {args.mode}")
     print()
     print(f"{'Workers':>8} {'Time(s)':>8} {'Ops/s':>8} {'MB/s':>8}")
     print("-" * 36)
@@ -59,8 +65,9 @@ def main():
     rows = []
     for w in [int(x) for x in args.workers.split(",")]:
         t0 = time.monotonic()
-        total = sum(f.result() for f in as_completed(
-            [ThreadPoolExecutor(max_workers=w).submit(download, u) for u in urls]))
+        with Executor(max_workers=w) as ex:
+            total = sum(f.result() for f in as_completed(
+                [ex.submit(download, u) for u in urls]))
         dt = time.monotonic() - t0
         ops = n / dt
         mbs = total / dt / 1048576
